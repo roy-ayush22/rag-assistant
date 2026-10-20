@@ -1,0 +1,30 @@
+@import "katex/dist/katex.min.css";
+
+/* Interface palette: change these values to recolor the app in one place. */
+:root {
+  --color-lime: #ecf39e;
+  --color-teal: #619b8a;
+  --color-sage: #a1c181;
+  --color-ink: #1e2b22;
+  --color-white: #ffffff;
+  --color-shadow: rgb(97 155 138 / 20%);
+
+  --font-llm-prose: 'Inter', 'Roboto', system-ui, -apple-system, sans-serif;
+  --font-llm-code: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+
+  color: var(--color-ink);
+  background: var(--color-lime);
+  font-family: var(--font-llm-prose);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { width: 100%; min-width: 320px; height: 100%; min-height: 100%; margin: 0; }
+body { min-height: 100vh; }
+button, input { font: inherit; }
+button { color: inherit; }
+::selection { background: var(--color-sage); color: var(--color-ink); }
