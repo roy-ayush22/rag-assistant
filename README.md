@@ -1,98 +1,63 @@
-# RAG From Scratch
+# RAG Document Assistant
 
-A Retrieval-Augmented Generation (RAG) pipeline built step by step in a Jupyter notebook, without a high-level RAG framework. PDFs are loaded, chunked, embedded with a local sentence-embedding model, and stored in a persistent ChromaDB collection. The retrieval and LLM stages are the next step.
+A PDF question answering prototype built from the retrieval and generation steps in `notebook/document.ipynb`. FastAPI serves the RAG pipeline, and the React + TypeScript frontend displays answers with their retrieved source pages.
 
-## Architecture
+## How it works
 
-```
-INGESTION (implemented)
+1. PDF pages in `data/` are split into 1000-character chunks with 500-character overlap.
+2. `all-MiniLM-L6-v2` embeds each chunk and question.
+3. ChromaDB searches the persistent `data/vector_store` collection.
+4. Groq generates a grounded answer and cites the retrieved source numbers.
 
- PDFs ──► Loader ──► Chunker ──► Embedder ──► Vector store
- data/    PyPDFLoader  RecursiveCharacter  all-MiniLM-L6-v2   ChromaDB
-          (per page)   TextSplitter        (384-dim)          (persistent)
-
-
-RETRIEVAL + GENERATION (pending)
-
- Question ──► Embed query ──► Top-k similarity ──► Context ──► LLM ──► Answer
-              (same model)    search (ChromaDB)    + metadata          + sources
-```
-
-The query must be embedded with the same model used at ingestion, otherwise similarity scores are meaningless.
-
-## Project Structure
-
-```
-rag-from-scratch/
-├── data/
-│   ├── *.pdf                 # input documents
-│   └── vector_store/         # ChromaDB persistence (auto-created)
-├── notebooks/
-│   └── document.ipynb        # the pipeline
-└── venv/
-```
-
-The notebook uses paths relative to its own location (`../data/`), so it must sit one directory below the folder containing `data/`.
+The API reuses the existing `pdf_documents` collection. If the collection is empty, it indexes PDFs from `data/` on startup. The embedding model is loaded locally; the first run may download it.
 
 ## Setup
 
+Create and activate a Python environment, then install the dependencies:
+
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install langchain-community langchain-text-splitters pypdf \
-            sentence-transformers transformers numpy chromadb \
-            jupyter ipywidgets
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-The first run downloads `all-MiniLM-L6-v2` from the Hugging Face Hub. Setting `HF_TOKEN` is optional and only raises rate limits.
+Create `.env` from `.env.example` and set your Groq API key. The existing notebook uses `GROQ_API`; `GROQ_API_KEY` is also accepted.
 
-## Usage
+Install frontend dependencies:
 
-1. Put one or more PDFs in `data/`.
-2. Start Jupyter and open `notebooks/document.ipynb` with the `venv` kernel.
-3. Run the cells top to bottom.
+```bash
+cd frontend
+npm install
+```
 
-## Pipeline Stages
+## Run locally
 
-### 1. Document loading
+Start the API from the project root:
 
-`DirectoryLoader` with `PyPDFLoader` recursively reads every `**/*.pdf` under `../data/`. Each PDF page becomes one LangChain `Document` with this metadata:
+```bash
+uvicorn app.main:app --reload
+```
 
-| Field | Description |
-|---|---|
-| `source` | File path |
-| `page`, `page_label` | Zero-based page index and page label |
-| `total_pages` | Page count of the PDF |
-| `producer`, `creator`, `creationdate`, `title` | PDF file properties |
+In a second terminal, start the frontend:
 
-### 2. Chunking
+```bash
+cd frontend
+npm run dev
+```
 
-`process_and_chunk(documents, chunk_size=250, chunk_overlap=50)` uses `RecursiveCharacterTextSplitter`.
+Open the Vite URL printed in the terminal (usually `http://localhost:5173`). Vite forwards `/api` requests to FastAPI at `http://127.0.0.1:8000`. API docs are available at `http://127.0.0.1:8000/docs`.
 
-| Parameter | Value |
-|---|---|
-| `chunk_size` | 250 |
-| `chunk_overlap` | 50 |
-| `length_function` | `len` (**characters**, not tokens) |
-| `separators` | `"\n\n"`, `"\n"`, `" "`, `""` |
+## API
 
-Chunks inherit the metadata of their parent page.
+`POST /ask`
 
-### 3. Embedding
+```json
+{
+  "question": "What is a synchronous generator?",
+  "top_k": 5
+}
+```
 
-`EmbeddingManager` wraps `SentenceTransformer`.
+The response contains an `answer` and a `sources` array. Each source includes the PDF filename, one-based page number, retrieved text, and cosine similarity.
 
-- Model: `all-MiniLM-L6-v2` (384 dimensions)
-- `generate_embedding(texts: List[str]) -> np.ndarray` returns an array of shape `(n_texts, 384)`
-
-### 4. Vector store
-
-`VectorManager` wraps a ChromaDB `PersistentClient`.
-
-| Setting | Value |
-|---|---|
-| Persist directory | `../data/vector_store` |
-| Collection | `pdf_documents` |
-| ID format | `doc_<8-char uuid>_<index>` |
-
-`add_documents(documents, embeddings)` stores, for each chunk, its text, its embedding, and its metadata. Two fields are added on top of the inherited PDF metadata: `doc_index` (position in the batch) and `content_length` (characters in the chunk).
+`GET /health` reports the number of indexed chunks.
