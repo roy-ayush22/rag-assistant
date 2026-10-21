@@ -8,7 +8,6 @@ from typing import Any
 import chromadb
 from dotenv import load_dotenv
 from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
-from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sentence_transformers import SentenceTransformer
@@ -87,7 +86,7 @@ class RagService:
         )[0]
         matches = self.collection.query(
             query_embeddings=[query_embedding.tolist()],
-            n_results=min(top_k, max(self.collection.count(), 1)),
+            n_results=top_k,
             include=["documents", "metadatas", "distances"],
         )
 
@@ -107,36 +106,36 @@ class RagService:
 
         if not sources:
             return {
-                "answer": "I couldn't find relevant content in your indexed documents to answer that.",
+                "answer": "No relevant context found to answer the question.",
                 "sources": [],
             }
 
-        context = "\n\n".join(
-            f"[Source {index}: {source['source']}, page {source['page']}]\n"
-            f"{source['content']}"
-            for index, source in enumerate(sources, start=1)
-        )
+        context = "\n\n".join(source["content"] for source in sources)
+        if not context:
+            return {
+                "answer": "No relevant context found to answer the question.",
+                "sources": [],
+            }
+
         api_key = os.getenv("GROQ_API") or os.getenv("GROQ_API_KEY")
         if not api_key:
             raise RuntimeError("GROQ_API is not configured")
 
         llm = ChatGroq(
             groq_api_key=api_key,
-            model_name=os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL),
+            model_name=DEFAULT_GROQ_MODEL,
             temperature=0.1,
             max_tokens=1024,
         )
-        prompt = f"""You are a helpful assistant answering questions from the user's PDF documents.
-Answer accurately and concisely using only the context below. If it does not contain
-enough information, say what is missing. Cite factual claims with source numbers like [1].
+        prompt_template = """Use the following context to answer the question concisely.
+        Context:
+        {context}
 
-Context:
-{context}
+        Question: {query}
 
-Question: {question}
-
-Answer:"""
-        response = llm.invoke([HumanMessage(content=prompt)])
+        Answer:"""
+        prompt = prompt_template.format(context=context, query=question)
+        response = llm.invoke([prompt])
         answer = response.content
         if not isinstance(answer, str):
             answer = "".join(
