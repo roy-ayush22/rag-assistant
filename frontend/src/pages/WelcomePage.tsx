@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
+import remarkGfm from "remark-gfm";
 import ChatInput from "../components/ChatInput";
 import SuggestionChip from "../components/SuggestionChip";
 import "./WelcomePage.css";
@@ -25,7 +26,7 @@ type AskResponse = {
 };
 
 const suggestions = [
-  "What is a synchronous generator?",
+  "What is a synchronous machine?",
   "How does a salient-pole rotor differ?",
   "Explain armature reaction",
 ];
@@ -69,8 +70,7 @@ export default function WelcomePage() {
         body: JSON.stringify({ question: prompt, top_k: 5 }),
       });
       const payload = (await response.json()) as
-        | AskResponse
-        | { detail?: string };
+        AskResponse | { detail?: string };
       if (!response.ok) {
         throw new Error(
           "detail" in payload && payload.detail
@@ -140,8 +140,15 @@ export default function WelcomePage() {
               </div>
               <div className="chat-message__content">
                 <ReactMarkdown
-                  remarkPlugins={[remarkMath]}
+                  remarkPlugins={[remarkGfm, remarkMath]}
                   rehypePlugins={[rehypeKatex]}
+                  components={{
+                    table: (props) => (
+                      <div className="table-wrap">
+                        <table {...props} />
+                      </div>
+                    ),
+                  }}
                 >
                   {message.content}
                 </ReactMarkdown>

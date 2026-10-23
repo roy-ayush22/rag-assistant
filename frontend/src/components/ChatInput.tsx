@@ -1,25 +1,25 @@
-import { useState } from 'react'
-import type { FormEvent } from 'react'
+import { useState } from "react";
+import type { FormEvent } from "react";
 
 export type ChatInputProps = {
-  onSubmit: (text: string) => void
-  disabled?: boolean
-  placeholder?: string
-}
+  onSubmit: (text: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+};
 
 export default function ChatInput({
   onSubmit,
   disabled = false,
-  placeholder = 'Ask a question about your documents...',
+  placeholder = "Ask a question about your documents...",
 }: ChatInputProps) {
-  const [text, setText] = useState('')
+  const [text, setText] = useState("");
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const prompt = text.trim()
-    if (!prompt || disabled) return
-    onSubmit(prompt)
-    setText('')
+    event.preventDefault();
+    const prompt = text.trim();
+    if (!prompt || disabled) return;
+    onSubmit(prompt);
+    setText("");
   }
 
   return (
@@ -42,5 +42,5 @@ export default function ChatInput({
         </svg>
       </button>
     </form>
-  )
+  );
 }
