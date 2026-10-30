@@ -1,9 +1,38 @@
+# Python
 venv/
+.venv/
 __pycache__/
 *.pyc
-.env
-.DS_Store
 *.egg-info/
+.env
+
+# Build output and logs
 dist/
 build/
-.venv/
+dist-ssr/
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Frontend dependencies and local files
+node_modules/
+*.local
+
+# Editor and operating system files
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Local vector database
+data/vector_store/
+vectore_store/
