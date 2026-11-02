@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +16,36 @@ from sentence_transformers import SentenceTransformer
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT_DIR / "data"
 VECTOR_STORE_DIR = DATA_DIR / "vector_store"
-COLLECTION_NAME = "pdf_documents"
 load_dotenv(ROOT_DIR / ".env")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
+MIN_SIMILARITY = float(os.getenv("RAG_MIN_SIMILARITY", "0.30"))
+NO_ANSWER = "I couldn't find that in the electric motor reference material."
+
+
+def _format_bare_math(text: str) -> str:
+    text = re.sub(
+        r"\\\[(.*?)\\\]",
+        lambda match: "$$\n" + match.group(1).strip() + "\n$$",
+        text,
+        flags=re.DOTALL,
+    )
+    text = re.sub(
+        r"\\\((.*?)\\\)",
+        lambda match: "$" + match.group(1).strip() + "$",
+        text,
+        flags=re.DOTALL,
+    )
+
+    def wrap_formula(match: re.Match[str]) -> str:
+        formula = match.group(1).strip().rstrip(" ;,.")
+        return f"${formula}$"
+
+    return re.sub(
+        r"(?<!\\)\[\s*([^\[\]\n]*?(?:\\[A-Za-z]+|=)[^\[\]\n]*?)\s*(?<!\\)\]",
+        wrap_formula,
+        text,
+    )
 
 
 class RagService:
@@ -27,8 +54,14 @@ class RagService:
     def __init__(self) -> None:
         self.embedding_model = SentenceTransformer(EMBEDDING_MODEL)
         self.client = chromadb.PersistentClient(path=str(VECTOR_STORE_DIR))
+        pdfs = sorted(DATA_DIR.rglob("*.pdf"))
+        fingerprint = hashlib.sha256(EMBEDDING_MODEL.encode("utf-8"))
+        for pdf in pdfs:
+            fingerprint.update(str(pdf.relative_to(DATA_DIR)).encode("utf-8"))
+            fingerprint.update(pdf.read_bytes())
+        collection_name = f"pdf_docs_{fingerprint.hexdigest()[:12]}"
         self.collection = self.client.get_or_create_collection(
-            name=COLLECTION_NAME,
+            name=collection_name,
             metadata={
                 "description": "pdf documents for rag",
                 "hnsw:space": "cosine",
@@ -101,21 +134,11 @@ class RagService:
                 "similarity": round(1 - float(distance), 4),
             }
             for content, metadata, distance in zip(documents, metadatas, distances)
-            if 1 - float(distance) >= 0.0
+            if 1 - float(distance) >= MIN_SIMILARITY
         ]
 
         if not sources:
-            return {
-                "answer": "No relevant context found to answer the question.",
-                "sources": [],
-            }
-
-        context = "\n\n".join(source["content"] for source in sources)
-        if not context:
-            return {
-                "answer": "No relevant context found to answer the question.",
-                "sources": [],
-            }
+            return {"answer": NO_ANSWER, "sources": []}
 
         api_key = os.getenv("GROQ_API") or os.getenv("GROQ_API_KEY")
         if not api_key:
@@ -127,18 +150,30 @@ class RagService:
             temperature=0.1,
             max_tokens=1024,
         )
-        prompt_template = """Use the following context to answer the question concisely.
-        Context:
-        {context}
+        labeled_context = "\n\n".join(
+            f"[{index}] {source['content']}"
+            for index, source in enumerate(sources, start=1)
+        )
+        prompt = f"""You answer questions about electric motors from the reference passages below.
+Use only facts supported by these passages. Match the meaning of the question even when it is phrased simply or uses different words than the passage.
+Answer directly when a passage contains the answer. Do not abstain merely because the question is short.
+If none of the passages contains the answer, reply exactly: {NO_ANSWER}
+Include the supporting passage number, such as [1].
+Write equations in LaTeX using $...$ inline or $$...$$ on separate lines; do not use bare square brackets as math delimiters.
 
-        Question: {query}
+Passages:
+{labeled_context}
 
-        Answer:"""
-        prompt = prompt_template.format(context=context, query=question)
+Question: {question}
+Answer:"""
         response = llm.invoke([prompt])
         answer = response.content
         if not isinstance(answer, str):
             answer = "".join(
                 part.get("text", "") for part in answer if isinstance(part, dict)
             )
+        answer = answer.strip()
+        if answer == NO_ANSWER and sources[0]["similarity"] >= 0.50:
+            answer = f"{sources[0]['content'].strip()} [1]"
+        answer = _format_bare_math(answer)
         return {"answer": answer, "sources": sources}
