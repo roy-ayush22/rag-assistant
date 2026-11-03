@@ -17,6 +17,7 @@ type Message = {
   role: "user" | "assistant";
   content: string;
   sources?: Source[];
+  id: string;
 };
 
 type Conversation = {
@@ -156,7 +157,7 @@ export default function WelcomePage() {
 
     const conversationId = activeConversationId ?? createConversationId();
     setActiveConversationId(conversationId);
-    appendMessage(conversationId, { role: "user", content: prompt });
+    appendMessage(conversationId, { role: "user", content: prompt, id: createConversationId() });
     setLoadingConversationId(conversationId);
 
     try {
@@ -179,6 +180,7 @@ export default function WelcomePage() {
         role: "assistant",
         content: result.answer,
         sources: result.sources,
+        id: createConversationId(),
       });
     } catch (error) {
       const message =
@@ -188,6 +190,7 @@ export default function WelcomePage() {
       appendMessage(conversationId, {
         role: "assistant",
         content: `I couldn't answer that right now. ${message}`,
+        id: createConversationId(),
       });
     } finally {
       setLoadingConversationId((current) =>
@@ -205,7 +208,7 @@ export default function WelcomePage() {
           className="sidebar-toggle"
           type="button"
           aria-label="Open chat history"
-          aria-expanded={false}
+          aria-expanded={sidebarOpen}
           onClick={() => setSidebarOpen(true)}
         >
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -301,7 +304,7 @@ export default function WelcomePage() {
           {messages.map((message, index) => (
             <article
               className={`chat-message chat-message--${message.role}`}
-              key={`${index}-${message.role}`}
+              key={message.id}
             >
               <div className="chat-message__label">
                 {message.role === "user" ? "You" : "EE Assistant"}
