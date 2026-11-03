@@ -9,7 +9,7 @@ A PDF question answering prototype built from the retrieval and generation steps
 3. Qdrant Cloud searches the `electric_motors` collection.
 4. Groq generates a grounded answer and cites the retrieved source numbers.
 
-The notebook uploads PDF chunks and their embeddings to Qdrant. The API connects to that same collection and does not ingest or index PDFs on startup. The embedding model is loaded locally; the first run may download it.
+The notebook uploads PDF chunks and their locally generated embeddings to Qdrant. The API connects to that collection and uses Qdrant Cloud Inference with the same MiniLM model to embed each question, so Render does not load the sentence-transformer model. The API does not ingest or index PDFs on startup. Qdrant Cloud Inference must be enabled for the cluster.
 
 ## Setup
 

@@ -10,11 +10,14 @@ from typing import Any
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+QDRANT_INFERENCE_MODEL = os.getenv(
+    "QDRANT_INFERENCE_MODEL",
+    "sentence-transformers/all-minilm-l6-v2",
+)
 DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "electric_motors")
 MIN_SIMILARITY = float(os.getenv("RAG_MIN_SIMILARITY", "0.30"))
@@ -147,8 +150,6 @@ class RagService:
         self._client = None
         self._client_lock = Lock()
         self.collection_name = QDRANT_COLLECTION
-        self._embedding_model = None
-        self._embedding_model_lock = Lock()
 
     @property
     def client(self):
@@ -158,18 +159,10 @@ class RagService:
                     self._client = QdrantClient(
                         url=self._qdrant_url,
                         api_key=self._qdrant_api_key,
+                        cloud_inference=True,
                         check_compatibility=False,
                     )
         return self._client
-
-    def _get_embedding_model(self):
-        if self._embedding_model is None:
-            with self._embedding_model_lock:
-                if self._embedding_model is None:
-                    from sentence_transformers import SentenceTransformer
-
-                    self._embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-        return self._embedding_model
 
     def count(self) -> int:
         if not self.client.collection_exists(self.collection_name):
@@ -184,12 +177,12 @@ class RagService:
         if collection_count == 0:
             return {"answer": NO_ANSWER, "sources": []}
 
-        query_embedding = self._get_embedding_model().encode(
-            [question], show_progress_bar=False
-        )[0]
         matches = self.client.query_points(
             collection_name=self.collection_name,
-            query=query_embedding.tolist(),
+            query=models.Document(
+                text=question,
+                model=QDRANT_INFERENCE_MODEL,
+            ),
             limit=min(top_k, collection_count),
             with_payload=True,
         )
