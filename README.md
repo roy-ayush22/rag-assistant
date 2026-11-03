@@ -4,12 +4,12 @@ A PDF question answering prototype built from the retrieval and generation steps
 
 ## How it works
 
-1. PDF pages in `data/` are split into 1000-character chunks with 500-character overlap.
+1. PDF pages in `data/` are split into 1000-character chunks with 150-character overlap.
 2. `all-MiniLM-L6-v2` embeds each chunk and question.
-3. ChromaDB searches the persistent `data/vector_store` collection.
+3. Qdrant Cloud searches the `electric_motors` collection.
 4. Groq generates a grounded answer and cites the retrieved source numbers.
 
-The API reuses the existing `pdf_documents` collection. If the collection is empty, it indexes PDFs from `data/` on startup. The embedding model is loaded locally; the first run may download it.
+The notebook uploads PDF chunks and their embeddings to Qdrant. The API connects to that same collection and does not ingest or index PDFs on startup. The embedding model is loaded locally; the first run may download it.
 
 ## Setup
 
@@ -21,7 +21,9 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Create `.env` from `.env.example` and set your Groq API key. The existing notebook uses `GROQ_API`; `GROQ_API_KEY` is also accepted.
+Create `.env` from `.env.example` and set `GROQ_API`, `QDRANT_URL`, and `QDRANT_API_KEY`. `GROQ_API_KEY` is also accepted. Set `QDRANT_COLLECTION` and `EMBEDDING_MODEL` to the same values for notebook ingestion and API retrieval.
+
+Run the notebook ingestion cells in order through the vector upload cell to send the PDF chunks to Qdrant. The API can answer questions after the collection has been populated.
 
 Install frontend dependencies:
 

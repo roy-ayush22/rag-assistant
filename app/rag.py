@@ -1,26 +1,22 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import time
 from pathlib import Path
 from typing import Any
 
-import chromadb
 from dotenv import load_dotenv
-from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT_DIR / "data"
-VECTOR_STORE_DIR = DATA_DIR / "vector_store"
 load_dotenv(ROOT_DIR / ".env")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192")
+QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "electric_motors")
 MIN_SIMILARITY = float(os.getenv("RAG_MIN_SIMILARITY", "0.30"))
 NO_ANSWER = "I couldn't find that in the electric motor reference material."
 SYSTEM_PROMPT = """
@@ -138,94 +134,60 @@ def _format_bare_math(text: str) -> str:
 
 
 class RagService:
-    """Loads the notebook's persisted Chroma index and answers user questions."""
+    """Queries the shared Qdrant collection and answers user questions."""
 
     def __init__(self) -> None:
         self.embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-        self.client = chromadb.PersistentClient(path=str(VECTOR_STORE_DIR))
-        pdfs = sorted(DATA_DIR.rglob("*.pdf"))
-        fingerprint = hashlib.sha256(EMBEDDING_MODEL.encode("utf-8"))
-        for pdf in pdfs:
-            fingerprint.update(str(pdf.relative_to(DATA_DIR)).encode("utf-8"))
-            stat = pdf.stat()
-            fingerprint.update(f"{stat.st_size}:{stat.st_mtime}".encode("utf-8"))
-        collection_name = f"pdf_docs_{fingerprint.hexdigest()[:12]}"
-        self.collection = self.client.get_or_create_collection(
-            name=collection_name,
-            metadata={
-                "description": "pdf documents for rag",
-                "hnsw:space": "cosine",
-            },
-        )
+        qdrant_url = os.getenv("QDRANT_URL")
+        qdrant_api_key = os.getenv("QDRANT_API_KEY")
+        if not qdrant_url or not qdrant_api_key:
+            raise RuntimeError("QDRANT_URL and QDRANT_API_KEY must be configured")
 
-        if self.collection.count() == 0:
-            self._ingest_pdfs()
+        self.client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+        self.collection_name = QDRANT_COLLECTION
+        if not self.client.collection_exists(self.collection_name):
+            self.client.create_collection(
+                collection_name=self.collection_name,
+                vectors_config=models.VectorParams(
+                    size=self.embedding_model.get_embedding_dimension(),
+                    distance=models.Distance.COSINE,
+                ),
+            )
 
-    def _ingest_pdfs(self) -> None:
-        """Build the same 1000-character chunks used by the notebook if needed."""
-        pdfs = list(DATA_DIR.rglob("*.pdf"))
-        if not pdfs:
-            return
-
-        pages = DirectoryLoader(
-            str(DATA_DIR), glob="**/*.pdf", loader_cls=PyPDFLoader
-        ).load()
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=150,
-            length_function=len,
-            separators=["\n\n", "\n", " ", ""],
-        )
-        chunks = splitter.split_documents(pages)
-        if not chunks:
-            return
-
-        texts = [chunk.page_content for chunk in chunks]
-        embeddings = self.embedding_model.encode(texts, show_progress_bar=False)
-        ids: list[str] = []
-        metadatas: list[dict[str, Any]] = []
-        for index, chunk in enumerate(chunks):
-            metadata = dict(chunk.metadata)
-            source = str(metadata.get("source", "unknown"))
-            page = metadata.get("page", 0)
-            digest = hashlib.sha256(
-                f"{source}:{page}:{index}:{chunk.page_content}".encode("utf-8")
-            ).hexdigest()[:24]
-            ids.append(digest)
-            metadata["doc_index"] = index
-            metadata["content_length"] = len(chunk.page_content)
-            metadatas.append(metadata)
-
-        self.collection.upsert(
-            ids=ids,
-            documents=texts,
-            metadatas=metadatas,
-            embeddings=embeddings.tolist(),
-        )
+    def count(self) -> int:
+        return self.client.count(
+            collection_name=self.collection_name,
+            exact=True,
+        ).count
 
     def ask(self, question: str, top_k: int = 5) -> dict[str, Any]:
+        collection_count = self.count()
+        if collection_count == 0:
+            return {"answer": NO_ANSWER, "sources": []}
+
         query_embedding = self.embedding_model.encode(
             [question], show_progress_bar=False
         )[0]
-        matches = self.collection.query(
-            query_embeddings=[query_embedding.tolist()],
-            n_results=min(top_k, self.collection.count()),
-            include=["documents", "metadatas", "distances"],
+        matches = self.client.query_points(
+            collection_name=self.collection_name,
+            query=query_embedding.tolist(),
+            limit=min(top_k, collection_count),
+            with_payload=True,
         )
-
-        documents = matches["documents"][0] if matches["documents"] else []
-        metadatas = matches["metadatas"][0] if matches["metadatas"] else []
-        distances = matches["distances"][0] if matches["distances"] else []
-        sources = [
-            {
-                "source": Path(str(metadata.get("source", "document"))).name,
-                "page": int(metadata.get("page", 0)) + 1,
-                "content": content,
-                "similarity": round(1 - float(distance), 4),
-            }
-            for content, metadata, distance in zip(documents, metadatas, distances)
-            if 1 - float(distance) >= MIN_SIMILARITY
-        ]
+        sources = []
+        for point in matches.points:
+            payload = point.payload or {}
+            similarity = float(point.score or 0.0)
+            if similarity < MIN_SIMILARITY:
+                continue
+            sources.append(
+                {
+                    "source": Path(str(payload.get("source", "document"))).name,
+                    "page": int(payload.get("page", 0)) + 1,
+                    "content": str(payload.get("text", "")),
+                    "similarity": round(similarity, 4),
+                }
+            )
 
         if not sources:
             return {"answer": NO_ANSWER, "sources": []}

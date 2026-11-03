@@ -58,15 +58,15 @@ def root() -> dict[str, str]:
 @app.get("/health")
 def health(request: Request) -> dict[str, Any]:
     service: RagService = request.app.state.rag
-    return {"status": "ok", "indexed_chunks": service.collection.count()}
+    return {"status": "ok", "indexed_chunks": service.count()}
 
 
 @app.post("/ask", response_model=AskResponse)
 def ask(payload: AskRequest, request: Request) -> dict[str, Any]:
     service: RagService = request.app.state.rag
-    if service.collection.count() == 0:
+    if service.count() == 0:
         return {
-            "answer": "No PDF content is indexed yet. Add a PDF to the data folder and restart the API.",
+            "answer": "No PDF content is indexed yet. Run the notebook ingestion cells to upload the PDF chunks to Qdrant.",
             "sources": [],
         }
 

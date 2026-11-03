@@ -301,7 +301,7 @@ export default function WelcomePage() {
           aria-label="Conversation"
           aria-live="polite"
         >
-          {messages.map((message, index) => (
+          {messages.map((message) => (
             <article
               className={`chat-message chat-message--${message.role}`}
               key={message.id}
