@@ -4,13 +4,13 @@ import os
 import re
 import time
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
-from qdrant_client import QdrantClient, models
-from sentence_transformers import SentenceTransformer
+from qdrant_client import QdrantClient
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
@@ -137,24 +137,43 @@ class RagService:
     """Queries the shared Qdrant collection and answers user questions."""
 
     def __init__(self) -> None:
-        self.embedding_model = SentenceTransformer(EMBEDDING_MODEL)
         qdrant_url = os.getenv("QDRANT_URL")
         qdrant_api_key = os.getenv("QDRANT_API_KEY")
         if not qdrant_url or not qdrant_api_key:
             raise RuntimeError("QDRANT_URL and QDRANT_API_KEY must be configured")
 
-        self.client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+        self._qdrant_url = qdrant_url
+        self._qdrant_api_key = qdrant_api_key
+        self._client = None
+        self._client_lock = Lock()
         self.collection_name = QDRANT_COLLECTION
-        if not self.client.collection_exists(self.collection_name):
-            self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=models.VectorParams(
-                    size=self.embedding_model.get_embedding_dimension(),
-                    distance=models.Distance.COSINE,
-                ),
-            )
+        self._embedding_model = None
+        self._embedding_model_lock = Lock()
+
+    @property
+    def client(self):
+        if self._client is None:
+            with self._client_lock:
+                if self._client is None:
+                    self._client = QdrantClient(
+                        url=self._qdrant_url,
+                        api_key=self._qdrant_api_key,
+                        check_compatibility=False,
+                    )
+        return self._client
+
+    def _get_embedding_model(self):
+        if self._embedding_model is None:
+            with self._embedding_model_lock:
+                if self._embedding_model is None:
+                    from sentence_transformers import SentenceTransformer
+
+                    self._embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+        return self._embedding_model
 
     def count(self) -> int:
+        if not self.client.collection_exists(self.collection_name):
+            return 0
         return self.client.count(
             collection_name=self.collection_name,
             exact=True,
@@ -165,7 +184,7 @@ class RagService:
         if collection_count == 0:
             return {"answer": NO_ANSWER, "sources": []}
 
-        query_embedding = self.embedding_model.encode(
+        query_embedding = self._get_embedding_model().encode(
             [question], show_progress_bar=False
         )[0]
         matches = self.client.query_points(
