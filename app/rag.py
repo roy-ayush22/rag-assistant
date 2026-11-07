@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 import re
 import time
+from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 from typing import Any
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -136,6 +138,22 @@ def _format_bare_math(text: str) -> str:
     )
 
 
+@lru_cache(maxsize=4)
+def _render_pdf_page(source_path: str, page_index: int) -> bytes:
+    """Render a PDF page once and cache its PNG for the figure endpoint."""
+    import pymupdf
+
+    pdf = pymupdf.open(source_path)
+    try:
+        page = pdf.load_page(page_index)
+        return page.get_pixmap(
+            matrix=pymupdf.Matrix(1.25, 1.25),
+            alpha=False,
+        ).tobytes("png")
+    finally:
+        pdf.close()
+
+
 class RagService:
     """Queries the shared Qdrant collection and answers user questions."""
 
@@ -172,6 +190,23 @@ class RagService:
             exact=True,
         ).count
 
+    def render_figure(self, source_name: str, page_number: int) -> bytes:
+        """Render one page from a PDF bundled in the project's data directory."""
+        if Path(source_name).name != source_name or not source_name.lower().endswith(".pdf"):
+            raise FileNotFoundError("PDF source was not found")
+
+        data_dir = ROOT_DIR / "data"
+        source_path = (data_dir / source_name).resolve()
+        if source_path.parent != data_dir.resolve() or not source_path.is_file():
+            raise FileNotFoundError("PDF source was not found")
+
+        if page_number < 1:
+            raise FileNotFoundError("PDF page was not found")
+        try:
+            return _render_pdf_page(str(source_path), page_number - 1)
+        except (IndexError, ValueError) as error:
+            raise FileNotFoundError("PDF page was not found") from error
+
     def ask(self, question: str, top_k: int = 5) -> dict[str, Any]:
         collection_count = self.count()
         if collection_count == 0:
@@ -192,12 +227,22 @@ class RagService:
             similarity = float(point.score or 0.0)
             if similarity < MIN_SIMILARITY:
                 continue
+            source_name = Path(str(payload.get("source", "document"))).name
+            page_number = int(payload.get("page", 0)) + 1
+            is_visual = payload.get("content_type") == "visual"
             sources.append(
                 {
-                    "source": Path(str(payload.get("source", "document"))).name,
-                    "page": int(payload.get("page", 0)) + 1,
+                    "source": source_name,
+                    "page": page_number,
                     "content": str(payload.get("text", "")),
                     "similarity": round(similarity, 4),
+                    "content_type": "visual" if is_visual else "text",
+                    "visual_type": payload.get("visual_type") if is_visual else None,
+                    "image_url": (
+                        f"/api/figures/{quote(source_name, safe='')}/{page_number}"
+                        if is_visual
+                        else None
+                    ),
                 }
             )
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
@@ -43,6 +43,9 @@ class Source(BaseModel):
     page: int
     content: str
     similarity: float
+    content_type: str = "text"
+    visual_type: str | None = None
+    image_url: str | None = None
 
 
 class AskResponse(BaseModel):
@@ -59,6 +62,20 @@ def root() -> dict[str, str]:
 def health(request: Request) -> dict[str, Any]:
     service: RagService = request.app.state.rag
     return {"status": "ok", "indexed_chunks": service.count()}
+
+
+@app.get("/figures/{source_name}/{page_number}")
+def figure(source_name: str, page_number: int, request: Request) -> Response:
+    service: RagService = request.app.state.rag
+    try:
+        image = service.render_figure(source_name, page_number)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="PDF figure was not found") from error
+    return Response(
+        content=image,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @app.post("/ask", response_model=AskResponse)

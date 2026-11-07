@@ -162,6 +162,11 @@
 .chat-message__content code { font-family: var(--font-llm-code); font-size: .9em; }
 .chat-message__content p, .chat-message__content ul, .chat-message__content ol { margin: 8px 0; }
 
+.chat-figures { display: grid; gap: 14px; margin-top: 14px; }
+.chat-figure { margin: 0; padding: 10px; border: 1px solid var(--color-sage); border-radius: 12px; background: rgb(255 255 255 / 72%); }
+.chat-figure img { display: block; width: 100%; max-height: 480px; object-fit: contain; border-radius: 8px; background: #fff; }
+.chat-figure figcaption { margin-top: 8px; color: var(--color-teal); font-size: 12px; font-weight: 600; }
+
 .chat-sources { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--color-sage); font-size: 13px; }
 .chat-sources summary { width: fit-content; color: var(--color-teal); font-weight: 700; cursor: pointer; }
 .chat-sources ol { display: grid; gap: 12px; margin: 12px 0 0; padding-left: 22px; }

@@ -11,6 +11,9 @@ type Source = {
   page: number;
   content: string;
   similarity: number;
+  content_type?: "text" | "visual";
+  visual_type?: string | null;
+  image_url?: string | null;
 };
 
 type Message = {
@@ -58,6 +61,19 @@ function createConversationId() {
 function conversationTitle(question: string) {
   const title = question.trim();
   return title.length > 42 ? `${title.slice(0, 42).trim()}…` : title;
+}
+
+function getVisualSources(sources?: Source[]) {
+  const uniqueSources = new Map<string, Source & { image_url: string }>();
+  for (const source of sources ?? []) {
+    if (source.image_url) {
+      uniqueSources.set(source.image_url, {
+        ...source,
+        image_url: source.image_url,
+      });
+    }
+  }
+  return [...uniqueSources.values()];
 }
 
 function BrandMark() {
@@ -324,6 +340,27 @@ export default function WelcomePage() {
                   {message.content}
                 </ReactMarkdown>
               </div>
+              {message.role === "assistant" &&
+                getVisualSources(message.sources).length > 0 && (
+                  <div className="chat-figures">
+                    {getVisualSources(message.sources).map((source) => {
+                      const label =
+                        source.visual_type === "graph" ? "Graph" : "Figure";
+                      return (
+                        <figure className="chat-figure" key={source.image_url}>
+                          <img
+                            src={source.image_url}
+                            alt={`${label} from ${source.source}, page ${source.page}`}
+                            loading="lazy"
+                          />
+                          <figcaption>
+                            {label} · {source.source}, page {source.page}
+                          </figcaption>
+                        </figure>
+                      );
+                    })}
+                  </div>
+                )}
               {message.sources && message.sources.length > 0 && (
                 <details className="chat-sources">
                   <summary>Sources ({message.sources.length})</summary>
