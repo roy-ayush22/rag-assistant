@@ -18,122 +18,132 @@ QDRANT_INFERENCE_MODEL = os.getenv(
     "QDRANT_INFERENCE_MODEL",
     "sentence-transformers/all-minilm-l6-v2",
 )
-DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192")
+DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "electric_motors")
 MIN_SIMILARITY = float(os.getenv("RAG_MIN_SIMILARITY", "0.30"))
 NO_ANSWER = "I couldn't find that in the electric motor reference material."
-SYSTEM_PROMPT = """
-You are an intelligent AI assistant powered by a
-Retrieval-Augmented Generation (RAG) system.
+SYSTEM_PROMPT = r"""\
+You are the Electric Motor Assistant for a Retrieval-Augmented Generation
+system. Answer the user's current question using the supplied reference
+passages. Recent conversation may clarify a follow-up question, but the
+passages are the source of truth.
 
-YOUR MAIN RESPONSIBILITY:
-Understand the user's actual intention and provide
-accurate, helpful, natural, and easy-to-understand answers.
+Rules:
+- Be accurate, direct, and approachable for an engineering student.
+- Answer only what the passages support. Do not invent specifications,
+  calculations, citations, or document details.
+- If the passages do not answer the question, reply exactly:
+  "I couldn't find that in the electric motor reference material."
+- Cite factual claims with the relevant passage number in square brackets,
+  for example [1] or [1][3]. Do not cite unsupported claims.
+- Explain a technical term briefly when it improves clarity. Use short
+  headings or bullets only when they make the answer easier to follow.
+- Treat the latest user question as the requested task. Use conversation
+  history only to resolve references such as "it", "that motor", or
+  "the previous equation".
 
-1. UNDERSTANDING USER QUESTIONS
-- Understand simple, casual and informal language.
-- Do not require users to use technical terminology.
-- Understand spelling mistakes and grammatical errors.
-- Understand incomplete and poorly structured questions.
-- Identify the actual meaning behind the question.
-- Understand synonyms and alternative expressions.
-- Do not depend on exact keyword matching.
-- Interpret what the user means, not just what they type.
-
-2. QUERY INTERPRETATION
-- Convert unclear questions into meaningful search queries.
-- Identify important concepts and related terminology.
-- Consider different possible meanings of a question.
-- Search for relevant information even when the user's
-  wording differs from the document's wording.
-- Never change the original intent of the question.
-
-3. CONTEXT AWARENESS
-- Remember previous questions in the conversation.
-- Understand follow-up questions such as:
-  "Explain more", "Why?", "How does it work?",
-  "Give an example", and "What about its types?"
-- Connect follow-up questions to the previous topic.
-- Do not ask users to repeat information unnecessarily.
-
-4. DOCUMENT RETRIEVAL
-- Use the retrieved document context carefully.
-- Consider all relevant retrieved passages.
-- Combine information from multiple relevant passages.
-- Do not select information based only on keyword matches.
-- Ignore irrelevant retrieved content.
-- If information is missing, clearly acknowledge it.
-
-5. ANSWER GENERATION
-- Answer the exact question asked.
-- Use simple and understandable English.
-- Explain technical terms in ordinary language.
-- Prefer clear and direct answers.
-- Break complicated concepts into smaller parts.
-- Provide examples wherever useful.
-- Use bullet points and headings when appropriate.
-- Avoid unnecessary technical jargon.
-- Do not give unnecessarily long answers.
-
-6. ACCURACY AND HONESTY
-- Never invent facts, figures, or references.
-- Do not assume information that is not provided.
-- Distinguish document-based facts from general knowledge.
-- If the retrieved context does not contain the answer,
-  clearly say that the documents do not provide it.
-- Never pretend to have found information that is missing.
-
-7. CONVERSATIONAL BEHAVIOUR
-- Be friendly, natural and helpful.
-- Respond like a human tutor.
-- Do not sound robotic.
-- Handle greetings and casual conversation naturally.
-- Ask a clarification question only when necessary.
-- If the question is understandable, answer directly.
-
-8. EXPLANATION STYLE
-When explaining a topic:
-- Start with a simple definition.
-- Explain how it works.
-- Give a practical example.
-- Explain important types or applications if relevant.
-- Provide a short summary when useful.
-
-9. OUTPUT QUALITY
-- Prioritize relevance over answer length.
-- Do not repeat the same information.
-- Use examples related to the question.
-- Make answers understandable even to beginners.
-
-IMPORTANT:
-Your primary purpose is to help users understand
-information, not simply repeat retrieved document text.
+Math formatting contract:
+- Write every equation or symbolic expression in LaTeX.
+- Use \( ... \) for inline math and \[ ... \] on their own line for display
+  math. Never use $ or $$ delimiters.
+- Keep normal prose, units, source citations, and monetary amounts outside
+  math delimiters unless they are part of an equation.
+- Use LaTeX commands such as \frac, \sqrt, subscripts, superscripts, and
+  \mathrm where appropriate. Do not put math in code fences.
+- After a display equation, explain the symbols or relationship in plain
+  language when useful.
 """
 
 
 def _format_bare_math(text: str) -> str:
+    """Normalise math delimiters so remark-math / KaTeX can parse them reliably.
+
+    remark-math understands both $ / $$ and \\( / \\[ delimiters.
+    We convert everything to the \\( ... \\) / \\[ ... \\] form which is
+    unambiguous (no collision with currency signs or stray dollar characters).
+    """
+    # 1. $$...$$ display math  →  \\[ ... \\]
     text = re.sub(
-        r"\\\[(.*?)\\\]",
-        lambda match: "$$\n" + match.group(1).strip() + "\n$$",
+        r"\$\$([\s\S]+?)\$\$",
+        lambda m: "\\[\n" + m.group(1).strip() + "\n\\]",
         text,
-        flags=re.DOTALL,
     )
+    # 2. $...$ inline math  →  \\( ... \\)
+    #    Guard: don't match a lone $ (e.g. currency) – require at least one
+    #    LaTeX-looking character inside (\, ^, _, digits mixed with letters).
     text = re.sub(
-        r"\\\((.*?)\\\)",
-        lambda match: "$" + match.group(1).strip() + "$",
+        r"\$([^$\n]{1,300}?)\$",
+        lambda m: "\\(" + m.group(1).strip() + "\\)"
+        if re.search(r"[\\^_{}]|\\[A-Za-z]+|\d", m.group(1))
+        else m.group(0),
         text,
-        flags=re.DOTALL,
     )
 
-    def wrap_formula(match: re.Match[str]) -> str:
-        formula = match.group(1).strip().rstrip(" ;,.")
-        return f"${formula}$"
+    # --- helper: split text into math-spans vs plain-text segments ---
+    _MATH_SPAN = re.compile(r"(\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\))")
 
-    return re.sub(
-        r"(?<!\\)\[\s*([^\[\]\n]*?(?:\\[A-Za-z]+|=)[^\[\]\n]*?)\s*(?<!\\)\]",
-        wrap_formula,
+    def _apply_outside_math(text: str, fn) -> str:
+        """Apply `fn` only to segments that are NOT inside \\(…\\) or \\[…\\]."""
+        parts = _MATH_SPAN.split(text)
+        for i in range(0, len(parts), 2):  # even indices = plain text
+            parts[i] = fn(parts[i])
+        return "".join(parts)
+
+    # 3. Bare [formula] brackets  →  \\( formula \\)
+    _BARE_BRACKET = re.compile(
+        r"(?<!\\)\[\s*([^\[\]\n]*?(?:\\[A-Za-z]+|[=_^])[^\[\]\n]*?)\s*(?<!\\)\]"
+    )
+    text = _apply_outside_math(text, lambda s: _BARE_BRACKET.sub(
+        lambda m: "\\(" + m.group(1).strip().rstrip(" ;,.") + "\\)", s
+    ))
+
+    # 4. Catch parenthesised math variables: (I_a), (R_a/k^2), (V_{dc})
+    #    The outer parentheses are REPLACED by \( \).
+    #    Must contain a subscript/superscript to avoid false positives on (A) or (k).
+    _PAREN_MATH = re.compile(
+        r"\(\s*("
+        r"[A-Za-z][A-Za-z0-9]*[_^]\{?[A-Za-z0-9]+\}?"  # e.g. I_a, V_{dc}, k^2
+        r"(?:\s*/\s*[A-Za-z0-9_^{}]+)*"                  # optional /fraction
+        r")\s*\)"
+    )
+    text = _apply_outside_math(text, lambda s: _PAREN_MATH.sub(
+        lambda m: "\\(" + m.group(1).strip() + "\\)", s
+    ))
+
+    # 5. Catch remaining plain-text math tokens NOT inside parentheses.
+    #    Patterns: "R_a", "I_a", "k^2", "V_{dc}", "R_a/k^2"
+    #    Only match isolated tokens that look mathematical (contain _ or ^).
+    _PLAIN_MATH_TOKEN = re.compile(
+        r"(?<![\\$a-zA-Z(])"                       # not inside a word, parens, or already-delimited
+        r"("
+        r"[A-Za-z][A-Za-z0-9]*"                    # base letter(s)
+        r"(?:[_^]\{?[A-Za-z0-9]+\}?)+"             # at least one sub/superscript
+        r"(?:\s*/\s*[A-Za-z][A-Za-z0-9]*"          # optional "/fraction" part
+        r"(?:[_^]\{?[A-Za-z0-9]+\}?)*)?"           #   with its own sub/superscripts
+        r")"
+        r"(?![a-zA-Z\\)])"                         # not followed by more word chars or closing paren
+    )
+    text = _apply_outside_math(text, lambda s: _PLAIN_MATH_TOKEN.sub(
+        lambda m: "\\(" + m.group(1) + "\\)", s
+    ))
+
+    return text
+
+
+def _normalise_math_delimiters(text: str) -> str:
+    """Convert legacy dollar-delimited LaTeX without touching ordinary prose."""
+    text = re.sub(
+        r"\$\$([\s\S]+?)\$\$",
+        lambda match: "\\[\n" + match.group(1).strip() + "\n\\]",
         text,
     )
+
+    def replace_inline_math(match: re.Match[str]) -> str:
+        value = match.group(1).strip()
+        is_latex = "\\" in value or any(symbol in value for symbol in "_^={}")
+        return f"\\({value}\\)" if value and is_latex else match.group(0)
+
+    return re.sub(r"(?<!\$)\$([^$\n]{1,300}?)\$(?!\$)", replace_inline_math, text)
 
 
 class RagService:
@@ -271,7 +281,7 @@ class RagService:
         prompt = f"""Use the following retrieved passages to answer the question.
 If none of the passages contains the answer, reply exactly: {NO_ANSWER}
 Include the supporting passage number, such as [1].
-Write equations in LaTeX using $...$ inline or $$...$$ on separate lines; do not use bare square brackets as math delimiters.
+Write equations in LaTeX. Use \\( ... \\) for inline math and \\[ ... \\] on separate lines for display math. Do NOT use $ or $$ as math delimiters.
 
 {history_section}Passages:
 {labeled_context}
@@ -292,5 +302,5 @@ Answer:"""
                 part.get("text", "") for part in answer if isinstance(part, dict)
             )
         answer = answer.strip()
-        answer = _format_bare_math(answer)
+        answer = _normalise_math_delimiters(answer)
         return {"answer": answer, "sources": sources}

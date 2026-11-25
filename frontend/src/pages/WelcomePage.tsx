@@ -4,6 +4,7 @@ import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
 import ChatInput from "../components/ChatInput";
+import { prepareMathMarkdown } from "../components/mathMarkdown";
 import "./WelcomePage.css";
 
 type Source = {
@@ -37,6 +38,7 @@ type HealthResponse = {
 };
 
 const CONVERSATIONS_KEY = "ee-assistant-conversations";
+const MAX_HISTORY_TURN_LENGTH = 1800;
 
 function readConversations(): Conversation[] {
   try {
@@ -62,6 +64,27 @@ function createConversationId() {
 function conversationTitle(question: string) {
   const title = question.trim();
   return title.length > 42 ? `${title.slice(0, 42).trim()}…` : title;
+}
+
+function formatApiError(payload: unknown) {
+  if (!payload || typeof payload !== "object" || !("detail" in payload)) {
+    return "The request could not be completed.";
+  }
+
+  const { detail } = payload as { detail?: unknown };
+  if (typeof detail === "string" && detail) return detail;
+  if (Array.isArray(detail)) {
+    const message = detail.find(
+      (item): item is { msg: string } =>
+        typeof item === "object" &&
+        item !== null &&
+        "msg" in item &&
+        typeof item.msg === "string",
+    )?.msg;
+    if (message) return "Request validation failed: " + message;
+  }
+
+  return "The request could not be completed.";
 }
 
 function BrandMark() {
@@ -179,7 +202,10 @@ export default function WelcomePage() {
     setActiveConversationId(conversationId);
     const history = (activeConversation?.messages ?? [])
       .slice(-8)
-      .map(({ role, content }) => ({ role, content }));
+      .map(({ role, content }) => ({
+        role,
+        content: content.slice(0, MAX_HISTORY_TURN_LENGTH),
+      }));
     appendMessage(conversationId, { role: "user", content: prompt, id: createConversationId() });
     setLoadingConversationId(conversationId);
 
@@ -189,14 +215,9 @@ export default function WelcomePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: prompt, top_k: 5, history }),
       });
-      const payload = (await response.json()) as
-        AskResponse | { detail?: string };
+      const payload: unknown = await response.json();
       if (!response.ok) {
-        throw new Error(
-          "detail" in payload && payload.detail
-            ? payload.detail
-            : "The request could not be completed.",
-        );
+        throw new Error(formatApiError(payload));
       }
       const result = payload as AskResponse;
       appendMessage(conversationId, {
@@ -334,8 +355,11 @@ export default function WelcomePage() {
               </div>
               <div className="chat-message__content">
                 <ReactMarkdown
-                  remarkPlugins={[remarkGfm, remarkMath]}
-                  rehypePlugins={[rehypeKatex]}
+                  remarkPlugins={[
+                    remarkGfm,
+                    [remarkMath, { singleDollarTextMath: false }],
+                  ]}
+                  rehypePlugins={[[rehypeKatex, { strict: "ignore" }]]}
                   components={{
                     table: (props) => (
                       <div className="table-wrap">
@@ -344,7 +368,7 @@ export default function WelcomePage() {
                     ),
                   }}
                 >
-                  {message.content}
+                  {prepareMathMarkdown(message.content)}
                 </ReactMarkdown>
               </div>
               {message.sources && message.sources.length > 0 && (
